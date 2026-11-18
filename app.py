@@ -260,13 +260,6 @@ with right:
                 + f" &nbsp;·&nbsp; squad {s.squad_size + 1}/{SQUAD_MAX}",
                 unsafe_allow_html=True,
             )
-            with st.expander("Cells that will change"):
-                if preview.needs_row_at is not None:
-                    st.write(f"• The {team} column is full — a new row will be added to {backend.tab_title('roster')}.")
-                for ch in preview.changes:
-                    st.write(f"• {backend.tab_title(ch.tab)}!{ch.a1} → {ch.value!r}  ({ch.note})")
-                if not any("purse" in ch.note for ch in preview.changes) and preview.needs_row_at is None:
-                    st.caption("Purse cells are formulas, so the sheet recalculates them itself.")
 
     if st.button("✅ Confirm sale", type="primary", use_container_width=True,
                  disabled=not (preview and not preview.errors)):
