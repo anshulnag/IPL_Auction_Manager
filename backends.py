@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import json
 from pathlib import Path
 
 from sheet_logic import Change, pad
@@ -9,77 +10,69 @@ from sheet_logic import Change, pad
 TABS = ("auction", "roster")
 
 
-class GoogleBackend:
+class AppsScriptBackend:
 
-    def __init__(self, service_account_info: dict, sheet_url: str,
-                 auction_tab: str | None = None, roster_tab: str | None = None):
-        import gspread
-        from google.oauth2.service_account import Credentials
+    def __init__(self, url: str, token: str, auction_tab: str | None = None,
+                 roster_tab: str | None = None, timeout: int = 60):
+        import requests
 
-        creds = Credentials.from_service_account_info(
-            dict(service_account_info),
-            scopes=["https://www.googleapis.com/auth/spreadsheets"],
-        )
-        self.gc = gspread.authorize(creds)
-        self.sh = self.gc.open_by_url(sheet_url) if sheet_url.startswith("http") else self.gc.open_by_key(sheet_url)
-        sheets = self.sh.worksheets()
-
-        auction = self.sh.worksheet(auction_tab) if auction_tab else sheets[0]
-        if roster_tab:
-            roster = self.sh.worksheet(roster_tab)
-        else:
-            others = [ws for ws in sheets if ws.id != auction.id]
-            if not others:
-                raise ValueError("The spreadsheet needs a second tab for team squads (e.g. ROSTER).")
-            roster = next((ws for ws in others if ws.title.strip().lower() in ("roster", "squads", "squad", "teams")),
-                          others[0])
-        self.ws = {"auction": auction, "roster": roster}
-        self.label = f"Google Sheet · {self.sh.title}"
-        self.url = self.sh.url
+        self.session = requests.Session()
+        self.script_url = url.strip()
+        self.token = token
+        self.auction_tab = auction_tab or ""
+        self.roster_tab = roster_tab or ""
+        self.timeout = timeout
+        self.titles = {"auction": "auction tab", "roster": "roster tab"}
+        self.label = "Google Sheet (via Apps Script)"
+        self.url = None
         self.is_demo = False
 
-    def tab_title(self, tab):
-        return self.ws[tab].title
-
-    def read(self):
-        from gspread.utils import ValueRenderOption
-
-        out = {}
-        for tab, ws in self.ws.items():
-            vals = ws.get_all_values()
-            forms = ws.get_all_values(value_render_option=ValueRenderOption.formula)
-            width = max([len(r) for r in vals + forms] + [1])
-            vals, forms = pad(vals, width), pad(forms, width)
-            forms += [[""] * width] * (len(vals) - len(forms))
-            out[tab] = (vals, forms)
+    def _call(self, action, **payload):
+        body = {"token": self.token, "action": action, "auction_tab": self.auction_tab,
+                "roster_tab": self.roster_tab, **payload}
+        r = self.session.post(self.script_url, data=json.dumps(body),
+                              headers={"Content-Type": "text/plain;charset=utf-8"}, timeout=self.timeout)
+        r.raise_for_status()
+        try:
+            out = r.json()
+        except ValueError:
+            raise RuntimeError(
+                "The Apps Script didn't send back data. Check you used the web app URL ending in /exec "
+                "and that the deployment has 'Who has access: Anyone'."
+            ) from None
+        if not out.get("ok"):
+            raise RuntimeError(out.get("error") or "Apps Script returned an error.")
         return out
 
-    def write(self, changes: list[Change]):
+    def tab_title(self, tab):
+        return self.titles[tab]
+
+    def read(self):
+        out = self._call("read")
+        self.label = f"Google Sheet · {out.get('title', '')}"
+        self.url = out.get("url")
+        data = {}
         for tab in TABS:
-            batch = [{"range": c.a1, "values": [[c.value]]} for c in changes if c.tab == tab]
-            if batch:
-                self.ws[tab].batch_update(batch, value_input_option="USER_ENTERED")
+            t = out["tabs"][tab]
+            self.titles[tab] = t["title"]
+            vals = [[str(v) for v in row] for row in t["values"]]
+            forms = [[str(v) for v in row] for row in t["formulas"]]
+            width = max([len(r) for r in vals + forms] + [1])
+            vals, forms = pad(vals, width), pad(forms, width)
+            forms += [[""] * width for _ in range(len(vals) - len(forms))]
+            data[tab] = (vals, forms)
+        return data
+
+    def write(self, changes: list[Change]):
+        if changes:
+            self._call("write", changes=[{"tab": c.tab, "row": c.row, "col": c.col, "value": c.value}
+                                         for c in changes])
 
     def insert_row(self, tab, row0):
-        sid = self.ws[tab].id
-        self.sh.batch_update({"requests": [
-            {"insertDimension": {"range": {"sheetId": sid, "dimension": "ROWS",
-                                           "startIndex": row0, "endIndex": row0 + 1},
-                                 "inheritFromBefore": row0 > 0}},
-            {"copyPaste": {"source": {"sheetId": sid, "startRowIndex": row0 + 1, "endRowIndex": row0 + 2},
-                           "destination": {"sheetId": sid, "startRowIndex": row0, "endRowIndex": row0 + 1},
-                           "pasteType": "PASTE_NORMAL"}},
-            {"repeatCell": {"range": {"sheetId": sid, "startRowIndex": row0 + 1, "endRowIndex": row0 + 2},
-                            "cell": {}, "fields": "userEnteredValue"}},
-        ]})
+        self._call("insert_row", tab=tab, row=row0)
 
     def copy_format(self, tab, src_row, dst_row, col, ncols=2):
-        sid = self.ws[tab].id
-        rng = lambda r: {"sheetId": sid, "startRowIndex": r, "endRowIndex": r + 1,
-                         "startColumnIndex": col, "endColumnIndex": col + ncols}
-        self.sh.batch_update({"requests": [
-            {"copyPaste": {"source": rng(src_row), "destination": rng(dst_row), "pasteType": "PASTE_FORMAT"}}
-        ]})
+        self._call("copy_format", tab=tab, src_row=src_row, dst_row=dst_row, col=col, ncols=ncols)
 
 
 class LocalBackend:

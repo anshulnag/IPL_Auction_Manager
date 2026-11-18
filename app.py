@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from backends import GoogleBackend, LocalBackend, record_sale, reverse_sale
+from backends import AppsScriptBackend, LocalBackend, record_sale, reverse_sale
 from sheet_logic import (OVERSEAS_MAX, SQUAD_MAX, TEAM_FULL_NAME, TEAMS, find_player,
                          find_summary, find_team_blocks, fmt_money, list_players, norm,
                          plan_reverse, plan_sale, squad, team_status)
@@ -35,20 +35,18 @@ def badge(code: str) -> str:
     return f'<span class="badge" style="background:{TEAM_COLORS.get(code, "#555")};color:{fg}">{code}</span>'
 
 
-@st.cache_resource(show_spinner="Connecting to Google Sheets…")
-def google_backend(sa_info: dict, url: str, auction_tab: str | None, roster_tab: str | None):
-    return GoogleBackend(sa_info, url, auction_tab or None, roster_tab or None)
+@st.cache_resource(show_spinner=False)
+def apps_script_backend(url: str, token: str, auction_tab: str, roster_tab: str):
+    return AppsScriptBackend(url, token, auction_tab or None, roster_tab or None)
 
 
 def get_backend():
     try:
-        has_secrets = "gcp_service_account" in st.secrets and "gsheet" in st.secrets
+        cfg = dict(st.secrets["apps_script"]) if "apps_script" in st.secrets else None
     except Exception:
-        has_secrets = False
-    if has_secrets:
-        g = st.secrets["gsheet"]
-        return google_backend(dict(st.secrets["gcp_service_account"]), g["url"],
-                              g.get("auction_tab", ""), g.get("roster_tab", ""))
+        cfg = None
+    if cfg:
+        return apps_script_backend(cfg["url"], cfg["token"], cfg.get("auction_tab", ""), cfg.get("roster_tab", ""))
     if "demo_backend" not in st.session_state:
         st.session_state.demo_backend = LocalBackend(Path(__file__).parent / "sample_data")
     return st.session_state.demo_backend
@@ -57,15 +55,14 @@ def get_backend():
 try:
     backend = get_backend()
 except Exception as e:
-    st.error(f"Couldn't open the Google Sheet: {e}")
-    st.info("Check that the sheet is shared (as Editor) with the service account's email, "
-            "and that the URL in `.streamlit/secrets.toml` is right.")
+    st.error(f"Couldn't connect to the Google Sheet: {e}")
     st.stop()
 
 
 def load(force=False):
     if force or "data" not in st.session_state:
-        st.session_state.data = backend.read()
+        with st.spinner("Reading the sheet…"):
+            st.session_state.data = backend.read()
     return st.session_state.data
 
 
@@ -73,6 +70,8 @@ try:
     data = load()
 except Exception as e:
     st.error(f"Couldn't read the sheet: {e}")
+    st.info("Check the Apps Script URL and token in your Streamlit secrets, and that the script is deployed "
+            "as a web app with 'Execute as: Me' and 'Who has access: Anyone'.")
     st.stop()
 
 a_vals, _ = data["auction"]
@@ -101,7 +100,7 @@ with st.sidebar:
         st.rerun()
     if backend.is_demo:
         st.warning("**Demo mode.** Sales go into a local copy of your sample sheet. "
-                   "Add your Google credentials to `.streamlit/secrets.toml` to write to the real sheet "
+                   "Add your Apps Script URL and token to the Streamlit secrets to write to the real sheet "
                    "(see README).")
         if st.button("Reset demo data", use_container_width=True):
             del st.session_state["demo_backend"]
