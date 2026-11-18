@@ -1,5 +1,3 @@
-"""Where the workbook lives: the real Google Sheet, or a local demo copy."""
-
 from __future__ import annotations
 
 import copy
@@ -12,7 +10,6 @@ TABS = ("auction", "roster")
 
 
 class GoogleBackend:
-    """Reads and writes the live Google Sheet through a service account."""
 
     def __init__(self, service_account_info: dict, sheet_url: str,
                  auction_tab: str | None = None, roster_tab: str | None = None):
@@ -27,9 +24,7 @@ class GoogleBackend:
         self.sh = self.gc.open_by_url(sheet_url) if sheet_url.startswith("http") else self.gc.open_by_key(sheet_url)
         sheets = self.sh.worksheets()
 
-        # Auction list: named tab, else the first tab.
         auction = self.sh.worksheet(auction_tab) if auction_tab else sheets[0]
-        # Squads: named tab, else one called ROSTER/SQUADS/TEAMS, else the next tab.
         if roster_tab:
             roster = self.sh.worksheet(roster_tab)
         else:
@@ -66,10 +61,6 @@ class GoogleBackend:
                 self.ws[tab].batch_update(batch, value_input_option="USER_ENTERED")
 
     def insert_row(self, tab, row0):
-        """Insert a row *above* row0, then move row0's contents up into it.
-
-        Net effect: a blank row appears directly below the old last row, but
-        because the insert happened inside the block, SUM ranges stretch."""
         sid = self.ws[tab].id
         self.sh.batch_update({"requests": [
             {"insertDimension": {"range": {"sheetId": sid, "dimension": "ROWS",
@@ -84,7 +75,7 @@ class GoogleBackend:
 
     def copy_format(self, tab, src_row, dst_row, col, ncols=2):
         sid = self.ws[tab].id
-        rng = lambda r: {"sheetId": sid, "startRowIndex": r, "endRowIndex": r + 1,  # noqa: E731
+        rng = lambda r: {"sheetId": sid, "startRowIndex": r, "endRowIndex": r + 1,
                          "startColumnIndex": col, "endColumnIndex": col + ncols}
         self.sh.batch_update({"requests": [
             {"copyPaste": {"source": rng(src_row), "destination": rng(dst_row), "pasteType": "PASTE_FORMAT"}}
@@ -92,7 +83,6 @@ class GoogleBackend:
 
 
 class LocalBackend:
-    """In-memory copy of the sample workbook, for trying the app without Google."""
 
     def __init__(self, folder: str | Path):
         folder = Path(folder)
@@ -135,12 +125,7 @@ class LocalBackend:
         pass
 
 
-# --------------------------------------------------------------------------
-# Operations used by the app (read -> plan -> write)
-# --------------------------------------------------------------------------
-
 def record_sale(backend, player, price, team, *, dry_run=False, **opts):
-    """Plan a sale and, unless dry_run, write it. Returns the final Plan."""
     from sheet_logic import plan_sale
 
     data = backend.read()
@@ -163,7 +148,7 @@ def record_sale(backend, player, price, team, *, dry_run=False, **opts):
     if plan.format_from:
         try:
             backend.copy_format("roster", *plan.format_from)
-        except Exception:  # formatting is cosmetic; never fail a sale over it
+        except Exception:
             pass
     return plan
 

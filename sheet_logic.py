@@ -1,28 +1,8 @@
-"""Pure logic for reading the auction workbook and planning sheet edits.
-
-Nothing in here talks to Google. Every function works on plain grids
-(list of rows, each a list of cell strings), so the same code runs against
-the live Google Sheet and against the local demo copy.
-
-Layout it expects (it locates everything by header text, not fixed cells):
-
-* Auction tab  - a header row containing FULL NAME, PRICE and TEAM
-                 (plus optional SET, SET NO., BASE PRICE, Country).
-* Roster tab   - optional summary table headed "Team Name | Purse Available |
-                 Purse Used | Overseas Used | Overseas Left".
-               - one block per team: a header cell with the team's name and
-                 "in CR" to its right, players listed below, and a
-                 "Salary Purse Remaining" row closing the block.
-"""
-
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 
-# --------------------------------------------------------------------------
-# Teams
-# --------------------------------------------------------------------------
 
 TEAMS: dict[str, list[str]] = {
     "CSK": ["Chennai Super Kings"],
@@ -44,7 +24,6 @@ HOME_COUNTRY = "india"
 
 
 def norm(text) -> str:
-    """Lower-case and strip everything except letters and digits."""
     return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
 
 
@@ -56,12 +35,10 @@ for _code, _names in TEAMS.items():
 
 
 def team_code(text) -> str | None:
-    """Map 'KKR', 'kkr', 'Kolkata Knight Riders ' ... to 'KKR'."""
     return _TEAM_LOOKUP.get(norm(text))
 
 
 def parse_money(text) -> float | None:
-    """'₹11.25' / '11.25' / '1,100' / '11.25 Cr' -> float, else None."""
     s = str(text or "").replace("₹", "").replace(",", "")
     s = re.sub(r"(?i)\s*(cr|crore|crores)\s*$", "", s).strip()
     if not s:
@@ -79,10 +56,6 @@ def fmt_money(x: float) -> str:
 def round_money(x: float) -> float:
     return round(x + 0.0, 2)
 
-
-# --------------------------------------------------------------------------
-# Grid helpers
-# --------------------------------------------------------------------------
 
 def pad(grid: list[list[str]], min_cols: int = 0) -> list[list[str]]:
     width = max([len(r) for r in grid] + [min_cols, 1])
@@ -115,10 +88,6 @@ def row_blank(grid, r) -> bool:
     return r < len(grid) and all(not str(v).strip() for v in grid[r])
 
 
-# --------------------------------------------------------------------------
-# Auction tab
-# --------------------------------------------------------------------------
-
 @dataclass
 class AuctionLayout:
     header_row: int
@@ -140,7 +109,7 @@ class Player:
     base: float | None
     country: str
     price: float | None
-    team: str  # whatever is written in the sheet
+    team: str
 
     @property
     def sold(self) -> bool:
@@ -182,7 +151,7 @@ def list_players(grid) -> tuple[AuctionLayout, list[Player]]:
         name = cell(grid, r, lay.name_col).strip()
         if not name:
             continue
-        g = lambda c: cell(grid, r, c).strip() if c is not None else ""  # noqa: E731
+        g = lambda c: cell(grid, r, c).strip() if c is not None else ""
         out.append(Player(
             row=r,
             name=name,
@@ -201,19 +170,15 @@ def find_player(players: list[Player], name: str) -> Player | None:
     return next((p for p in players if norm(p.name) == key), None)
 
 
-# --------------------------------------------------------------------------
-# Roster tab
-# --------------------------------------------------------------------------
-
 @dataclass
 class TeamBlock:
     code: str
     header_row: int
     name_col: int
     price_col: int
-    purse_row: int | None          # row of "Salary Purse Remaining"
-    first_row: int = 0             # first usable player row
-    last_row: int = 0              # last usable player row (inclusive)
+    purse_row: int | None
+    first_row: int = 0
+    last_row: int = 0
 
     @property
     def purse_cell(self):
@@ -224,7 +189,7 @@ class TeamBlock:
 class SummaryRow:
     code: str
     row: int
-    cols: dict[str, int] = field(default_factory=dict)  # purse_available, purse_used, overseas_used, overseas_left
+    cols: dict[str, int] = field(default_factory=dict)
 
 
 _SUMMARY_KEYS = {
@@ -246,7 +211,6 @@ def _col_index(letters: str) -> int:
 
 
 def _formula_range_rows(formula: str, col: int) -> tuple[int, int] | None:
-    """If a formula sums a range in `col` (e.g. =130-SUM(B14:B36)), return (first, last) 0-based rows."""
     for m in _RANGE_RE.finditer(formula.upper()):
         c1, r1, c2, r2 = _col_index(m.group(1)), int(m.group(2)) - 1, _col_index(m.group(3)), int(m.group(4)) - 1
         if c1 <= col <= c2:
@@ -271,7 +235,7 @@ def find_team_blocks(values, formulas) -> dict[str, TeamBlock]:
                     purse_row = rr
                     break
                 if team_code(cell(values, rr, c)) and norm(cell(values, rr, c + 1)) in ("incr", "cr"):
-                    break  # ran into the next block's header
+                    break
             end = (purse_row if purse_row is not None else len(values)) - 1
             first, last = r + 1, end
             raw = cell(formulas, purse_row, c + 1) if purse_row is not None else ""
@@ -279,11 +243,10 @@ def find_team_blocks(values, formulas) -> dict[str, TeamBlock]:
             if rng:
                 first, last = max(first, rng[0]), min(end, rng[1])
             else:
-                # Leave a fully blank spacer row(s) above the purse row alone.
                 while last > first and row_blank(values, last):
                     last -= 1
                 if purse_row is None:
-                    last = max(last, first)  # open-ended block: allow growth
+                    last = max(last, first)
             blocks[code] = TeamBlock(code, r, c, c + 1, purse_row, first, last)
     return blocks
 
@@ -308,7 +271,6 @@ def find_summary(values) -> dict[str, SummaryRow]:
 
 
 def squad(values, block: TeamBlock) -> list[tuple[int, str, float | None]]:
-    """(row, name, price) of every filled slot in a team's block."""
     rows = []
     stop = block.purse_row if block.purse_row is not None else len(values)
     for r in range(block.header_row + 1, stop):
@@ -319,7 +281,6 @@ def squad(values, block: TeamBlock) -> list[tuple[int, str, float | None]]:
 
 
 def squad_players(values, block) -> list[tuple[int, str, float | None]]:
-    """Squad minus non-player lines such as 'Penalty (18cr)'."""
     return [s for s in squad(values, block) if not norm(s[1]).startswith("penalty")]
 
 
@@ -329,10 +290,6 @@ def free_slot(values, block: TeamBlock) -> int | None:
             return r
     return None
 
-
-# --------------------------------------------------------------------------
-# Team status
-# --------------------------------------------------------------------------
 
 @dataclass
 class TeamStatus:
@@ -365,13 +322,9 @@ def team_status(roster_values, auction_players, blocks, summary) -> dict[str, Te
     return out
 
 
-# --------------------------------------------------------------------------
-# Edit plans
-# --------------------------------------------------------------------------
-
 @dataclass
 class Change:
-    tab: str          # "auction" or "roster"
+    tab: str
     row: int
     col: int
     value: object
@@ -387,12 +340,11 @@ class Plan:
     changes: list[Change] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    needs_row_at: int | None = None   # roster row to insert before (no free slot)
-    format_from: tuple[int, int, int] | None = None  # (src_row, dst_row, first_col) for formatting the new roster cells
+    needs_row_at: int | None = None
+    format_from: tuple[int, int, int] | None = None
 
 
 def _adjust(plan, tab, values, formulas, r, c, delta, label):
-    """Add delta to a cell unless it is a formula (the sheet recalculates those)."""
     if is_formula(cell(formulas, r, c)):
         return
     old = parse_money(cell(values, r, c))
@@ -405,7 +357,6 @@ def _adjust(plan, tab, values, formulas, r, c, delta, label):
 def plan_sale(auction_values, roster_values, roster_formulas, player_name, price, code,
               overseas_override: bool | None = None, allow_resale=False, allow_over_budget=False,
               slot_row: int | None = None) -> Plan:
-    """slot_row: a roster row just created for this sale (used after inserting a row)."""
     plan = Plan()
     player_name = player_name.strip()
     if not player_name:
@@ -454,25 +405,22 @@ def plan_sale(auction_values, roster_values, roster_formulas, player_name, price
     if plan.errors:
         return plan
 
-    # 1. Auction tab: price + team beside the player
     if p is not None:
         plan.changes.append(Change("auction", p.row, lay.price_col, price, "auction price"))
         plan.changes.append(Change("auction", p.row, lay.team_col, code, "auction team"))
 
-    # 2. Roster tab: next empty slot in the team's column
     slot = free_slot(roster_values, block)
     if slot is None and slot_row is not None and block.header_row < slot_row < (block.purse_row or len(roster_values)) \
             and not cell(roster_values, slot_row, block.name_col).strip():
         slot = slot_row
     if slot is None:
-        plan.needs_row_at = block.last_row  # insert above the last usable row so formula ranges stretch
+        plan.needs_row_at = block.last_row
         return plan
     plan.changes.append(Change("roster", slot, block.name_col, player_name, f"{code} squad name"))
     plan.changes.append(Change("roster", slot, block.price_col, price, f"{code} squad price"))
     if slot > block.header_row + 1:
         plan.format_from = (slot - 1, slot, block.name_col)
 
-    # 3. Purse / overseas numbers that are typed in rather than calculated
     if block.purse_cell:
         _adjust(plan, "roster", roster_values, roster_formulas, *block.purse_cell, -price, f"{code} purse remaining")
     s = summary.get(code)
@@ -489,7 +437,6 @@ def plan_sale(auction_values, roster_values, roster_formulas, player_name, price
 
 
 def plan_reverse(auction_values, roster_values, roster_formulas, player_name) -> Plan:
-    """Undo a sale: clear the auction price/team, empty the squad slot, refund the purse."""
     plan = Plan()
     lay, players = list_players(auction_values)
     blocks = find_team_blocks(roster_values, roster_formulas)

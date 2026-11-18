@@ -1,8 +1,3 @@
-"""IPL Auction Desk - record sales straight into the auction Google Sheet.
-
-Run:  streamlit run app.py
-"""
-
 from __future__ import annotations
 
 import random
@@ -40,10 +35,6 @@ def badge(code: str) -> str:
     return f'<span class="badge" style="background:{TEAM_COLORS.get(code, "#555")};color:{fg}">{code}</span>'
 
 
-# --------------------------------------------------------------------------
-# Connection
-# --------------------------------------------------------------------------
-
 @st.cache_resource(show_spinner="Connecting to Google Sheets…")
 def google_backend(sa_info: dict, url: str, auction_tab: str | None, roster_tab: str | None):
     return GoogleBackend(sa_info, url, auction_tab or None, roster_tab or None)
@@ -65,7 +56,7 @@ def get_backend():
 
 try:
     backend = get_backend()
-except Exception as e:  # noqa: BLE001
+except Exception as e:
     st.error(f"Couldn't open the Google Sheet: {e}")
     st.info("Check that the sheet is shared (as Editor) with the service account's email, "
             "and that the URL in `.streamlit/secrets.toml` is right.")
@@ -80,7 +71,7 @@ def load(force=False):
 
 try:
     data = load()
-except Exception as e:  # noqa: BLE001
+except Exception as e:
     st.error(f"Couldn't read the sheet: {e}")
     st.stop()
 
@@ -96,12 +87,9 @@ summary = find_summary(r_vals)
 status = team_status(r_vals, players, blocks, summary)
 missing = [c for c in TEAMS if c not in blocks]
 
-st.session_state.setdefault("history", [])   # [(player, team, price)]
+st.session_state.setdefault("history", [])
 st.session_state.setdefault("flash", None)
 
-# --------------------------------------------------------------------------
-# Sidebar
-# --------------------------------------------------------------------------
 
 with st.sidebar:
     st.markdown("### 🏏 IPL Auction Desk")
@@ -131,9 +119,6 @@ with st.sidebar:
         st.markdown(f"{badge(code)} &nbsp;**{purse}** &nbsp;·&nbsp; {s.squad_size}/{SQUAD_MAX} · ✈️ {ov}",
                     unsafe_allow_html=True)
 
-# --------------------------------------------------------------------------
-# Header + flash message
-# --------------------------------------------------------------------------
 
 st.title("IPL Auction Desk")
 sold_n = sum(p.sold for p in players)
@@ -147,9 +132,6 @@ if st.session_state.flash:
     getattr(st, kind)(msg)
     st.session_state.flash = None
 
-# --------------------------------------------------------------------------
-# Roulette
-# --------------------------------------------------------------------------
 
 by_name = {p.name: p for p in players}
 
@@ -203,9 +185,6 @@ with left:
         wheel.markdown(f'<div class="wheel">?<small>{len(pool)} players left in this set</small></div>',
                        unsafe_allow_html=True)
 
-# --------------------------------------------------------------------------
-# Sale form
-# --------------------------------------------------------------------------
 
 with right:
     st.subheader("🔨 Record a sale")
@@ -273,7 +252,7 @@ with right:
             try:
                 plan = record_sale(backend, player_name, price, team, overseas_override=overseas,
                                    allow_resale=resale, allow_over_budget=over_budget)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 plan = None
                 st.session_state.flash = ("error", f"Sheet update failed: {e}")
         if plan is not None:
@@ -302,9 +281,6 @@ with right:
 
 st.divider()
 
-# --------------------------------------------------------------------------
-# Tabs
-# --------------------------------------------------------------------------
 
 t1, t2, t3, t4 = st.tabs(["🏟️ Teams", "👥 Squads", "📋 Auction list", "↩️ Reverse a sale"])
 
