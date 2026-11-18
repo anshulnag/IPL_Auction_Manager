@@ -355,7 +355,7 @@ def _adjust(plan, tab, values, formulas, r, c, delta, label):
 
 
 def plan_sale(auction_values, roster_values, roster_formulas, player_name, price, code,
-              overseas_override: bool | None = None, allow_resale=False, allow_over_budget=False,
+              overseas_override: bool | None = None,
               slot_row: int | None = None) -> Plan:
     plan = Plan()
     player_name = player_name.strip()
@@ -383,9 +383,9 @@ def plan_sale(auction_values, roster_values, roster_formulas, player_name, price
         plan.warnings.append(f"'{player_name}' isn't in the auction list, so only the roster tab will be updated.")
     else:
         player_name = p.name
-        if p.sold and not allow_resale:
-            plan.errors.append(f"{p.name} is already marked sold to {p.team} for {p.price}. "
-                               f"Reverse that sale first, or tick 'overwrite'.")
+        if p.sold:
+            plan.errors.append(f"{p.name} is already sold to {p.team} for {p.price:g} Cr. "
+                               f"Reverse that sale first if it needs changing.")
         if p.base is not None and price < p.base:
             plan.warnings.append(f"Price is below {p.name}'s base price ({fmt_money(p.base)}).")
 
@@ -396,12 +396,18 @@ def plan_sale(auction_values, roster_values, roster_formulas, player_name, price
 
     status = team_status(roster_values, players, blocks, summary)[code]
     if status.purse_left is not None and price > status.purse_left + 1e-9:
-        msg = f"{code} only has {fmt_money(status.purse_left)} left."
-        (plan.warnings if allow_over_budget else plan.errors).append(msg + ("" if allow_over_budget else " Tick 'allow over budget' to record it anyway."))
+        plan.errors.append(f"{code} only has {fmt_money(status.purse_left)} left.")
     if status.squad_size + 1 > SQUAD_MAX:
         plan.warnings.append(f"{code} will have {status.squad_size + 1} players (limit {SQUAD_MAX}).")
-    if overseas and status.overseas is not None and status.overseas + 1 > OVERSEAS_MAX:
-        plan.warnings.append(f"{code} will have {status.overseas + 1} overseas players (limit {OVERSEAS_MAX}).")
+    if overseas:
+        s_row = summary.get(code)
+        left = None
+        if s_row and "overseas_left" in s_row.cols:
+            left = parse_money(cell(roster_values, s_row.row, s_row.cols["overseas_left"]))
+        if (status.overseas is not None and status.overseas >= OVERSEAS_MAX) or (left is not None and left < 1):
+            used = f"{status.overseas}/{OVERSEAS_MAX}" if status.overseas is not None else "all"
+            plan.errors.append(f"{code} has no overseas slots left ({used} used), so it can't buy "
+                               f"{p.name if p else player_name}.")
     if plan.errors:
         return plan
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import random
 import time
 from pathlib import Path
@@ -28,6 +29,28 @@ st.markdown("""
 .wheel small {display:block;font-size:.9rem;font-weight:500;opacity:.8;margin-top:4px}
 </style>
 """, unsafe_allow_html=True)
+
+
+def password_gate():
+    try:
+        password = str(st.secrets.get("app_password", ""))
+    except Exception:
+        password = ""
+    if not password or st.session_state.get("unlocked"):
+        return
+    st.title("IPL Auction Desk")
+    with st.form("unlock"):
+        entered = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Unlock", type="primary")
+    if submitted:
+        if hmac.compare_digest(entered.encode(), password.encode()):
+            st.session_state.unlocked = True
+            st.rerun()
+        st.error("Wrong password.")
+    st.stop()
+
+
+password_gate()
 
 
 def badge(code: str) -> str:
@@ -93,6 +116,9 @@ st.session_state.setdefault("flash", None)
 with st.sidebar:
     st.markdown("### 🏏 IPL Auction Desk")
     st.caption(backend.label)
+    if st.session_state.get("unlocked") and st.button("🔒 Lock", use_container_width=True):
+        st.session_state.unlocked = False
+        st.rerun()
     if backend.url:
         st.link_button("Open the sheet", backend.url, use_container_width=True)
     if st.button("🔄 Refresh from sheet", use_container_width=True):
@@ -213,17 +239,14 @@ with right:
     team = st.session_state.get("team")
     known = find_player(players, player_name) if player_name else None
 
-    oc1, oc2, oc3 = st.columns(3)
     overseas = None
     if player_name and not known:
-        overseas = oc1.checkbox("Overseas player", value=False)
-    over_budget = oc2.checkbox("Allow over budget")
-    resale = oc3.checkbox("Overwrite if already sold")
+        overseas = st.checkbox("Overseas player", value=False,
+                               help="This player isn't in the auction list, so the app can't read their country.")
 
     preview = None
     if player_name and team and price > 0:
-        preview = plan_sale(a_vals, r_vals, r_forms, player_name, price, team, overseas_override=overseas,
-                            allow_resale=resale, allow_over_budget=over_budget)
+        preview = plan_sale(a_vals, r_vals, r_forms, player_name, price, team, overseas_override=overseas)
         for e in preview.errors:
             st.error(e)
         for w in preview.warnings:
@@ -249,8 +272,7 @@ with right:
                  disabled=not (preview and not preview.errors)):
         with st.spinner("Writing to the sheet…"):
             try:
-                plan = record_sale(backend, player_name, price, team, overseas_override=overseas,
-                                   allow_resale=resale, allow_over_budget=over_budget)
+                plan = record_sale(backend, player_name, price, team, overseas_override=overseas)
             except Exception as e:
                 plan = None
                 st.session_state.flash = ("error", f"Sheet update failed: {e}")
