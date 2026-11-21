@@ -18,6 +18,7 @@ TEAMS: dict[str, list[str]] = {
 }
 TEAM_FULL_NAME = {code: names[0] for code, names in TEAMS.items()}
 
+UNSOLD_MARK = "UNSOLD"
 SQUAD_MAX = 25
 OVERSEAS_MAX = 8
 HOME_COUNTRY = "india"
@@ -112,8 +113,16 @@ class Player:
     team: str
 
     @property
+    def unsold(self) -> bool:
+        return norm(self.team) == norm(UNSOLD_MARK)
+
+    @property
     def sold(self) -> bool:
-        return bool(self.team.strip())
+        return bool(self.team.strip()) and not self.unsold
+
+    @property
+    def available(self) -> bool:
+        return not self.team.strip()
 
     @property
     def overseas(self) -> bool:
@@ -442,6 +451,22 @@ def plan_sale(auction_values, roster_values, roster_formulas, player_name, price
     return plan
 
 
+def plan_mark_unsold(auction_values, player_name) -> Plan:
+    plan = Plan()
+    lay, players = list_players(auction_values)
+    p = find_player(players, player_name)
+    if p is None:
+        plan.errors.append(f"{player_name} isn't in the auction list, so they can't be marked unsold.")
+    elif p.sold:
+        plan.errors.append(f"{p.name} is already sold to {p.team}. Reverse that sale first.")
+    elif p.unsold:
+        plan.errors.append(f"{p.name} is already marked unsold.")
+    else:
+        plan.changes.append(Change("auction", p.row, lay.price_col, "", "auction price"))
+        plan.changes.append(Change("auction", p.row, lay.team_col, UNSOLD_MARK, "auction team"))
+    return plan
+
+
 def plan_reverse(auction_values, roster_values, roster_formulas, player_name) -> Plan:
     plan = Plan()
     lay, players = list_players(auction_values)
@@ -467,7 +492,8 @@ def plan_reverse(auction_values, roster_values, roster_formulas, player_name) ->
         plan.changes.append(Change("auction", p.row, lay.team_col, "", "auction team"))
 
     if found is None:
-        plan.warnings.append(f"{player_name} wasn't in any squad column, so no purse was refunded.")
+        if not (p is not None and p.unsold):
+            plan.warnings.append(f"{player_name} wasn't in any squad column, so no purse was refunded.")
         return plan
 
     code, b, r, price = found

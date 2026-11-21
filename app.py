@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from backends import AppsScriptBackend, LocalBackend, record_sale, reverse_sale
-from sheet_logic import (OVERSEAS_MAX, SQUAD_MAX, TEAM_FULL_NAME, TEAMS, find_player,
+from sheet_logic import (OVERSEAS_MAX, SQUAD_MAX, TEAM_FULL_NAME, TEAMS, UNSOLD_MARK, plan_mark_unsold, find_player,
                          find_summary, find_team_blocks, fmt_money, list_players, norm,
                          plan_reverse, plan_sale, squad, team_status)
 
@@ -147,10 +147,12 @@ with st.sidebar:
 
 st.title("IPL Auction Desk")
 sold_n = sum(p.sold for p in players)
-c1, c2, c3 = st.columns(3)
+unsold_n = sum(p.unsold for p in players)
+c1, c2, c3, c4 = st.columns(4)
 c1.metric("Players in auction", len(players))
 c2.metric("Sold", sold_n)
-c3.metric("Still to go", len(players) - sold_n)
+c3.metric("Unsold", unsold_n)
+c4.metric("Still to go", len(players) - sold_n - unsold_n)
 
 if st.session_state.flash:
     kind, msg = st.session_state.flash
@@ -181,12 +183,17 @@ left, right = st.columns([1, 1.35], gap="large")
 with left:
     st.subheader("🎡 Roulette")
     set_names = list(sets)
-    first_open = next((s for s in set_names if any(not p.sold for p in sets[s])), set_names[0] if set_names else None)
-    chosen_set = st.selectbox(
-        "Set", set_names, index=set_names.index(first_open) if first_open else 0,
-        format_func=lambda s: f"{s}  ({sum(not p.sold for p in sets[s])} left)",
-    )
-    pool = [p for p in sets.get(chosen_set, []) if not p.sold]
+    first_open = next((s for s in set_names if any(p.available for p in sets[s])), set_names[0] if set_names else None)
+
+    def set_option(s):
+        left_n = sum(p.available for p in sets[s])
+        un = sum(p.unsold for p in sets[s])
+        return f"{s}  ({left_n} left" + (f" · {un} unsold)" if un else ")")
+
+    chosen_set = st.selectbox("Set", set_names, index=set_names.index(first_open) if first_open else 0,
+                              format_func=set_option)
+    include_unsold = st.checkbox("Include unsold players (re-auction)", value=False)
+    pool = [p for p in sets.get(chosen_set, []) if p.available or (include_unsold and p.unsold)]
     wheel = st.empty()
     spin = st.button("Spin the wheel", type="primary", use_container_width=True, disabled=not pool)
     if spin and pool:
@@ -205,7 +212,7 @@ with left:
         info = f"{current.country} · {current.set_name} · base {fmt_money(current.base) if current.base else '—'}"
         wheel.markdown(f'<div class="wheel">{current.name}<small>{info}</small></div>', unsafe_allow_html=True)
     elif not pool:
-        wheel.info("Every player in this set has been sold.")
+        wheel.info("No players left to draw in this set.")
     else:
         wheel.markdown(f'<div class="wheel">?<small>{len(pool)} players left in this set</small></div>',
                        unsafe_allow_html=True)
@@ -218,10 +225,16 @@ with right:
         p = by_name.get(name)
         if not p:
             return f"{name}  (not in auction list)"
-        tag = f"  ✅ SOLD → {p.team} {p.price:g}" if p.sold and p.price is not None else ("  ✅ SOLD" if p.sold else "")
+        if p.unsold:
+            tag = "  🚫 UNSOLD"
+        elif p.sold:
+            tag = f"  ✅ SOLD → {p.team} {p.price:g}" if p.price is not None else "  ✅ SOLD"
+        else:
+            tag = ""
         return f"{p.name}  ·  {p.set_name}{tag}"
 
-    unsold_first = [p.name for p in players if not p.sold] + [p.name for p in players if p.sold]
+    unsold_first = ([p.name for p in players if p.available] + [p.name for p in players if p.unsold]
+                    + [p.name for p in players if p.sold])
     st.selectbox("Player name", unsold_first, key="player", index=None, placeholder="Type to search…",
                  format_func=player_label, accept_new_options=True, on_change=on_player_change)
     pc1, pc2 = st.columns(2)
@@ -261,7 +274,29 @@ with right:
                 unsafe_allow_html=True,
             )
 
-    if st.button("✅ Confirm sale", type="primary", use_container_width=True,
+    b1, b2 = st.columns([2, 1])
+    can_mark_unsold = bool(known and known.available)
+    if b2.button("🚫 Mark unsold", use_container_width=True, disabled=not can_mark_unsold,
+                 help="No team bought this player. Writes UNSOLD in the TEAM column."):
+        try:
+            plan = plan_mark_unsold(backend.read()["auction"][0], known.name)
+            if not plan.errors:
+                backend.write(plan.changes)
+        except Exception as e:
+            plan = None
+            st.session_state.flash = ("error", f"Sheet update failed: {e}")
+        if plan is not None:
+            if plan.errors:
+                st.session_state.flash = ("error", " ".join(plan.errors))
+            else:
+                st.session_state.history.append((known.name, UNSOLD_MARK, None))
+                st.session_state.flash = ("info", f"🚫 {known.name} marked unsold.")
+                for k in ("player", "team", "price"):
+                    st.session_state.pop(k, None)
+        load(force=True)
+        st.rerun()
+
+    if b1.button("✅ Confirm sale", type="primary", use_container_width=True,
                  disabled=not (preview and not preview.errors)):
         with st.spinner("Writing to the sheet…"):
             try:
@@ -284,10 +319,14 @@ with right:
 
     if st.session_state.history:
         name, t, pr = st.session_state.history[-1]
-        if st.button(f"↩️ Undo last sale ({name} → {t}, {pr:g} Cr)", use_container_width=True):
+        was_unsold = t == UNSOLD_MARK
+        undo_label = (f"↩️ Undo: {name} marked unsold" if was_unsold
+                      else f"↩️ Undo last sale ({name} → {t}, {pr:g} Cr)")
+        if st.button(undo_label, use_container_width=True):
             plan = reverse_sale(backend, name)
-            st.session_state.flash = (("error", " ".join(plan.errors)) if plan.errors
-                                      else ("info", f"Reversed: {name} is back in the pool and {t}'s purse was refunded."))
+            done = (f"Undone: {name} is no longer marked unsold." if was_unsold
+                    else f"Reversed: {name} is back in the pool and {t}'s purse was refunded.")
+            st.session_state.flash = ("error", " ".join(plan.errors)) if plan.errors else ("info", done)
             if not plan.errors:
                 st.session_state.history.pop()
             load(force=True)
@@ -327,35 +366,37 @@ with t2:
 
 with t3:
     f1, f2 = st.columns([1, 2])
-    show = f1.radio("Show", ["All", "Unsold", "Sold"], horizontal=True)
+    show = f1.radio("Show", ["All", "Still to go", "Sold", "Unsold"], horizontal=True)
     q = f2.text_input("Search", placeholder="Name, country, set or team")
+    shown = {"All": players, "Still to go": [p for p in players if p.available],
+             "Sold": [p for p in players if p.sold], "Unsold": [p for p in players if p.unsold]}[show]
     df = pd.DataFrame([{"Set": set_label(p), "Player": p.name, "Country": p.country, "Base (Cr)": p.base,
-                        "Price (Cr)": p.price, "Team": p.team} for p in players])
-    if show == "Unsold":
-        df = df[df["Team"].str.strip() == ""]
-    elif show == "Sold":
-        df = df[df["Team"].str.strip() != ""]
+                        "Price (Cr)": p.price, "Team": p.team} for p in shown],
+                      columns=["Set", "Player", "Country", "Base (Cr)", "Price (Cr)", "Team"])
     if q:
         mask = df.apply(lambda r: q.lower() in " ".join(map(str, r.values)).lower(), axis=1)
         df = df[mask]
     st.dataframe(df, hide_index=True, use_container_width=True, height=420)
 
 with t4:
-    st.caption("Clears the price and team in the auction list, removes the player from the squad column "
-               "and puts the money back in the purse.")
-    sold_names = [p.name for p in players if p.sold]
-    target = st.selectbox("Sold player", sold_names, index=None, placeholder="Pick a player", key="reverse_pick",
-                          accept_new_options=True)
+    st.caption("For a sold player: clears the price and team, removes them from the squad and refunds the purse. "
+               "For an unsold player: clears the UNSOLD mark so they're back in the pool.")
+    sold_names = [p.name for p in players if p.sold] + [p.name for p in players if p.unsold]
+    target = st.selectbox("Sold or unsold player", sold_names, index=None, placeholder="Pick a player",
+                          key="reverse_pick", accept_new_options=True,
+                          format_func=lambda n: f"{n}  🚫 UNSOLD" if by_name.get(n) and by_name[n].unsold else n)
     if target:
         rp = plan_reverse(a_vals, r_vals, r_forms, target)
         for e in rp.errors:
             st.error(e)
         for w in rp.warnings:
             st.warning(w)
-        if st.button("Reverse this sale", disabled=bool(rp.errors)):
+        target_unsold = bool(by_name.get(target) and by_name[target].unsold)
+        if st.button("Clear unsold mark" if target_unsold else "Reverse this sale", disabled=bool(rp.errors)):
             plan = reverse_sale(backend, target)
             st.session_state.flash = (("error", " ".join(plan.errors)) if plan.errors
-                                      else ("info", f"Reversed the sale of {target}."))
+                                      else ("info", f"Cleared the unsold mark on {target}." if target_unsold
+                                                else f"Reversed the sale of {target}."))
             st.session_state.history = [h for h in st.session_state.history if norm(h[0]) != norm(target)]
             st.session_state.pop("reverse_pick", None)
             load(force=True)
